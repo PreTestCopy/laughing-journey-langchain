@@ -10,6 +10,7 @@ out/
 __pycache__/
 .pytest_cache/
 .venv/
+venv/
 .codevalid/ui/Dockerfile
 .codevalid/ui/playwright.config.js
 .codevalid/ui/helper/
