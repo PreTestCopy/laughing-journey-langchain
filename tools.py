@@ -16,7 +16,7 @@ ORDERS: dict[str, dict[str, str]] = {
 def lookup_order(order_id: str) -> str:
     """Look up the status of a customer order by order ID."""
     normalized_id = str(order_id).strip()
-    if len(normalized_id) < 2:
+    if len(normalized_id) < 3:
         return json.dumps({"order_id": normalized_id, "error": "invalid order id"})
     order = ORDERS.get(normalized_id)
     if order is None:
