@@ -1,0 +1,7 @@
+id: litellm:chat:gpt-5.1
+label: Judge (gpt-5.1 via LiteLLM)
+config:
+  apiBaseUrl: "{{ env.LITELLM_BASE_URL }}"
+  apiKey: "{{ env.LITELLM_API_KEY }}"
+  temperature: 0
+  max_tokens: 2048
