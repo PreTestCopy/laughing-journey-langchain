@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 _STATE: dict[str, Any] = {}
+
+
+def _parse_hints_into_orders(hints: list) -> dict[str, dict[str, str]]:
+    """Parse precondition hint strings into an orders dict for tools.ORDERS."""
+    orders: dict[str, dict[str, str]] = {}
+    for hint in hints:
+        if not isinstance(hint, str):
+            continue
+        # Match: "Order <ID> exists in system with status '<status>'"
+        # Also handles "status 'shipped' or 'processing'" — use first status found.
+        m = re.search(
+            r"Order\s+(\S+)\s+exists\s+in\s+system\s+with\s+status\s+'([^']+)'",
+            hint,
+            re.IGNORECASE,
+        )
+        if m:
+            order_id = m.group(1).strip()
+            status = m.group(2).strip()
+            orders[order_id] = {"status": status}
+    return orders
 
 
 def setup_dependencies(precondition: dict | None, config: dict | None) -> None:
@@ -17,6 +38,37 @@ def setup_dependencies(precondition: dict | None, config: dict | None) -> None:
     _STATE = dict(precondition or {})
     if config:
         _STATE.setdefault("config", config)
+
+    # Resolve workspace root to import tools
+    here = Path(__file__).resolve()
+    workspace = here
+    for _ in range(8):
+        workspace = workspace.parent
+        if (workspace / ".codevalid").is_dir():
+            break
+
+    agents_dir = str(workspace / "agents")
+    if agents_dir not in sys.path:
+        sys.path.insert(0, agents_dir)
+    if str(workspace) not in sys.path:
+        sys.path.insert(0, str(workspace))
+
+    try:
+        tools_mod = importlib.import_module("tools")
+        hints = []
+        if precondition and isinstance(precondition, dict):
+            hints = precondition.get("hints", [])
+        seeded = _parse_hints_into_orders(hints)
+        # Reset ORDERS to seeded data for this test; fall back to defaults when empty
+        if seeded:
+            tools_mod.ORDERS.clear()
+            tools_mod.ORDERS.update(seeded)
+        else:
+            # Restore defaults so non-preconditioned tests still work
+            tools_mod.ORDERS.clear()
+            tools_mod.ORDERS.update({"123": {"status": "delivered"}, "456": {"status": "processing"}})
+    except Exception:
+        pass  # If tools module not yet importable, skip seeding
 
 
 def _resolve_llm(config: dict):
@@ -42,6 +94,9 @@ def _invoke_agent(llm, user_input: str) -> str:
             break
     if str(workspace) not in sys.path:
         sys.path.insert(0, str(workspace))
+    agents_dir = str(workspace / "agents")
+    if agents_dir not in sys.path:
+        sys.path.insert(0, agents_dir)
     module = importlib.import_module("agent")
     target = getattr(module, "invoke", None)
     if target is None:
@@ -55,9 +110,11 @@ def _invoke_agent(llm, user_input: str) -> str:
 
 
 def call_api(prompt: str, options: dict, context: dict) -> dict:
-  config = options.get("config", {})
-  vars_ = context.get("vars", {})
-  setup_dependencies(vars_.get("precondition"), config)
-  llm = _resolve_llm(config)
-  output = _invoke_agent(llm, prompt)
-  return {"output": output}
+    config = options.get("config", {})
+    vars_ = context.get("vars", {})
+    setup_dependencies(vars_.get("precondition"), config)
+    model = config.get("model")
+    if model:
+        os.environ["MODEL_NAME"] = model
+    output = _invoke_agent(_resolve_llm(config), prompt)
+    return {"output": output}
