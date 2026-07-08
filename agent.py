@@ -30,6 +30,9 @@ def get_llm(*, traceparent: str | None = None) -> ChatOpenAI:
         api_key=os.getenv("LITELLM_API_KEY"),
         temperature=0,
         default_headers=default_headers,
+        # LiteLLM streaming echoes tool-call name/id chunks twice; LangChain
+        # concatenates them (e.g. lookup_orderlookup_order) unless streaming is off.
+        disable_streaming=True,
     )
 
 
