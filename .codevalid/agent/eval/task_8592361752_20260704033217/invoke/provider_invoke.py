@@ -9,7 +9,52 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from langchain_core.callbacks.base import BaseCallbackHandler
+except ImportError:
+    BaseCallbackHandler = object  # type: ignore[misc,assignment]
+
 _STATE: dict[str, Any] = {}
+
+
+class _ToolCallCaptureHandler(BaseCallbackHandler):
+    """Record LangChain tool invocations for promptfoo llm-rubric grading."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+        self._pending: dict[str, str] | None = None
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        name = serialized.get("name", "unknown")
+        tool_input = inputs if inputs is not None else input_str
+        self._pending = {"name": str(name), "input": str(tool_input)}
+
+    def on_tool_end(self, output: Any, **kwargs: Any) -> None:
+        if self._pending is not None:
+            self.calls.append({**self._pending, "output": str(output)})
+            self._pending = None
+
+    def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
+        if self._pending is not None:
+            self.calls.append({**self._pending, "output": f"error: {error}"})
+            self._pending = None
+
+
+def _format_tool_trace(calls: list[dict[str, str]]) -> str:
+    if not calls:
+        return ""
+    lines = ["", "--- Tool calls ---"]
+    for index, call in enumerate(calls, start=1):
+        lines.append(f"{index}. {call['name']}({call['input']})")
+        lines.append(f"   Result: {call['output']}")
+    return "\n".join(lines)
 
 
 def _parse_hints_into_orders(hints: list) -> dict[str, dict[str, str]]:
@@ -106,7 +151,9 @@ def _invoke_agent(llm, user_input: str) -> str:
         if isinstance(result, dict):
             return str(result.get("output", result))
         return str(result)
-    return str(target(user_input))
+    capture = _ToolCallCaptureHandler()
+    output = str(target(user_input, callbacks=[capture]))
+    return f"{output}{_format_tool_trace(capture.calls)}"
 
 
 def call_api(prompt: str, options: dict, context: dict) -> dict:
