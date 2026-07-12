@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "Agent eval — invoke (breakdown task_8130871272_20260712041906)"
+
+prompts:
+  - "{{ user_message }}"
+
+providers:
+  - file://providers.yaml
+
+defaultTest:
+  options:
+    provider: file://../../shared/judge_provider.yaml
+    rubricPrompt: file://../../shared/rubric_prompt.json
+  assert:
+    - type: llm-rubric
+      value: "{{ rubric }}"
+
+tests:
+  - description: "Process valid refund request"
+    vars:
+      user_message: "I need to process a refund request for order ORD-12345. The customer is reporting that the product arrived damaged."
+      rubric: |
+        - Agent is invoked successfully with the user input - build_agent_executor is called to construct the agent - _build_task_input processes the user refund request - Returns a response string (not empty or None) - Does not error during execution
+      scenario_type: "happy_path"
+      expected_tools: '["build_agent_executor", "_build_task_input"]'
+      precondition:
+        {
+                "hints": [
+                        "Agent executor can be successfully built",
+                        "Input processing function accepts refund request text"
+                ]
+        }
+
+  - description: "Request missing order identifier"
+    vars:
+      user_message: "I need to process a refund for a customer but I don't have the order number."
+      rubric: |
+        - Agent is invoked and builds executor successfully - _build_task_input receives the incomplete input - Agent output indicates missing order information is required - Does not invent or hallucinate an order identifier - Prompts user for order ID or indicates it cannot proceed without the order number
+      scenario_type: "missing_info"
+      expected_tools: '["build_agent_executor", "_build_task_input"]'
+      precondition:
+        {
+                "hints": [
+                        "Agent executor is properly initialized",
+                        "Input validation occurs within agent processing"
+                ]
+        }
+
+  - description: "Order status validation before refund"
+    vars:
+      user_message: "Customer wants a refund for order ORD-99999. Please check if this order is eligible for a refund."
+      rubric: |
+        - build_agent_executor creates the agent instance - _build_task_input structures the refund eligibility query - Agent processes the order identifier ORD-99999 in the request - Returns output indicating refund eligibility evaluation attempt - Agent execution completes without runtime errors
+      scenario_type: "validation"
+      expected_tools: '["build_agent_executor", "_build_task_input"]'
+      precondition:
+        {
+                "hints": [
+                        "Agent can process order-specific refund requests",
+                        "Task input builder accepts structured queries about orders"
+                ]
+        }
+
+  - description: "Handle malformed refund request"
+    vars:
+      user_message: "refund plz??? order thing broken"
+      rubric: |
+        - Agent executor is built successfully despite informal input - _build_task_input handles unstructured text input - Agent does not crash on malformed input - Returns some output (error message, clarification request, or guidance) - Demonstrates graceful handling of non-standard communication
+      scenario_type: "edge_case"
+      expected_tools: '["build_agent_executor", "_build_task_input"]'
+      precondition:
+        {
+                "hints": [
+                        "Input processing function can handle various text formats",
+                        "Agent has error handling for ambiguous requests"
+                ]
+        }
+
+  - description: "Business rules applied to refund decision"
+    vars:
+      user_message: "Order ORD-54321 was delivered 15 days ago. Customer wants a full refund due to product not matching description. Please evaluate if this qualifies under our 30-day refund policy."
+      rubric: |
+        - Agent executor is properly constructed - _build_task_input processes the detailed refund eligibility query - Agent output acknowledges refund policy evaluation needs - Does not immediately approve or deny without evaluation framework - Returns meaningful response about refund processing workflow
+      scenario_type: "spec_only"
+      expected_tools: '["build_agent_executor", "_build_task_input"]'
+      precondition:
+        {
+                "hints": [
+                        "Agent understands structured refund eligibility queries",
+                        "Input builder accepts policy-specific language"
+                ]
+        }
