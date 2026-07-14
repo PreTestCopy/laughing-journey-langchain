@@ -1,9 +1,9 @@
-langchain>=0.3.0,<1.0.0
+langchain>=0.3.21,<1.0.0
 langchain-openai>=0.2.0,<1.0.0
 langchain-core>=0.3.0,<1.0.0
 python-dotenv>=1.0.0
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.32.0,<1.0.0
-opentelemetry-api
-opentelemetry-sdk
-opentelemetry-instrumentation-genai-langchain
+opentelemetry-api==1.43.0
+opentelemetry-sdk==1.43.0
+opentelemetry-instrumentation-genai-langchain==1.0b0
