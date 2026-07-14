@@ -8,7 +8,9 @@ cleanup_files() { rm -f "$RESPONSE_FILE" "$STATUS_FILE"; }
 trap cleanup_files EXIT
 
 # Given
-# refund_order is an internal tool function, not a public HTTP API route. Public HTTP coverage is limited to /health.
+# Public API inspection exposed only GET /health. No public refund-resolution HTTP endpoint exists
+# in the provided call graph, so this script validates the reachable API surface while preserving
+# the seed case identifier.
 
 # When
 curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' "$BASE_URL/health" > "$STATUS_FILE"

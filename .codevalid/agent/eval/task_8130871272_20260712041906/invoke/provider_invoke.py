@@ -8,9 +8,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-WORKSPACE_ROOT = "/private/var/folders/64/v39k3dlx3kl6dhmf1gjqpmr4rlcd68/T/test_gen_le86r98i"
+WORKSPACE_ROOT = "/private/var/folders/64/v39k3dlx3kl6dhmf1gjqpmr4rlcd68/T/test_gen_dhaa6hms"
 if WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, WORKSPACE_ROOT)
+
+os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY")
 
 import yaml
 from opentelemetry import trace
@@ -26,13 +28,16 @@ except Exception:
     except Exception:
         from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
 
+try:
+    from langchain_community.chat_models import ChatLiteLLM
+except Exception:
+    ChatLiteLLM = None
+
 from langchain_openai import ChatOpenAI
 
 import agent as agent_module
 import tools as tools_module
 from agent import invoke as agent_invoke
-
-os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY")
 
 EVAL_DIR = Path(".codevalid/agent/eval/task_8130871272_20260712041906/invoke")
 PROVIDERS_DIR = EVAL_DIR / "providers"
@@ -51,8 +56,6 @@ except Exception:
         LangChainInstrumentor().instrument()
     except Exception:
         pass
-
-_ORIGINAL_GET_LLM = getattr(agent_module, "get_llm", None)
 
 
 @contextmanager
@@ -79,8 +82,6 @@ def _patched_llm_builder(llm: Any):
 
 @contextmanager
 def _patch_create_agent(llm: Any):
-    # Present for completeness and future-proofing; this fixture uses create_tool_calling_agent
-    # with get_llm(), so get_llm patching is the effective override.
     try:
         import langchain.agents as lc_agents
     except Exception:
@@ -94,7 +95,10 @@ def _patch_create_agent(llm: Any):
         if args:
             args = list(args)
             args[0] = llm
-        return (original_module or original_global)(*args, **kwargs)
+        target = original_module or original_global
+        if target is None:
+            raise RuntimeError("create_agent patch requested but no target exists")
+        return target(*args, **kwargs)
 
     try:
         if lc_agents and original_global:
@@ -119,11 +123,11 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _load_model_config(model_name: str | None) -> dict[str, Any]:
     if not model_name:
         return {}
-    path = PROVIDERS_DIR / f"{model_name}.yaml"
-    return _load_yaml(path)
+    return _load_yaml(PROVIDERS_DIR / f"{model_name}.yaml")
 
 
 def _get_var_mapping(prompt: str, context: dict | None) -> dict[str, Any]:
+    _ = prompt
     context = context or {}
     vars_ = context.get("vars") or {}
     return vars_ if isinstance(vars_, dict) else {}
@@ -135,22 +139,9 @@ def _extract_user_input(prompt: str, context: dict | None) -> str:
         value = vars_.get(key)
         if value is not None and str(value).strip():
             return str(value)
-    if isinstance(prompt, str):
-        stripped = prompt.strip()
-        if stripped:
-            return stripped
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt.strip()
     return ""
-
-
-def _extract_order_ids(text: str) -> list[str]:
-    if not text:
-        return []
-    seen: list[str] = []
-    for match in re.findall(r"\b[A-Za-z0-9-]{2,}\b", text):
-        token = match.strip().strip(".,!?;:\"")
-        if any(ch.isdigit() for ch in token) and token not in seen:
-            seen.append(token)
-    return seen
 
 
 def _normalize_precondition(precondition: Any) -> dict[str, Any]:
@@ -176,12 +167,23 @@ def _normalize_precondition(precondition: Any) -> dict[str, Any]:
     return {"value": precondition}
 
 
+def _extract_order_ids(text: str) -> list[str]:
+    if not text:
+        return []
+    seen: list[str] = []
+    for match in re.findall(r"\b[A-Za-z0-9-]{2,}\b", text):
+        token = match.strip().strip(".,!?;:\"'")
+        if any(ch.isdigit() for ch in token) and token not in seen:
+            seen.append(token)
+    return seen
+
+
 def _apply_hint_to_orders(hint: str) -> None:
     if not hint:
         return
     text = str(hint).strip()
-    order_ids = _extract_order_ids(text)
     lowered = text.lower()
+    order_ids = _extract_order_ids(text)
 
     if "does not exist" in lowered or "not exist" in lowered or "not found" in lowered:
         for order_id in order_ids:
@@ -191,15 +193,15 @@ def _apply_hint_to_orders(hint: str) -> None:
     status_match = re.search(r"status\s+'?([a-z_ -]+)'?", text, re.IGNORECASE)
     if not status_match:
         status_match = re.search(r"with status\s+'?([a-z_ -]+)'?", text, re.IGNORECASE)
-    if not status_match:
-        if "delivered" in lowered:
-            status = "delivered"
-        elif "processing" in lowered:
-            status = "processing"
-        else:
-            status = None
-    else:
+
+    if status_match:
         status = status_match.group(1).strip().lower()
+    elif "delivered" in lowered:
+        status = "delivered"
+    elif "processing" in lowered:
+        status = "processing"
+    else:
+        status = None
 
     for order_id in order_ids:
         if status:
@@ -217,16 +219,18 @@ def setup_dependencies(precondition: Any, config: dict | None) -> None:
 
     normalized = _normalize_precondition(precondition)
 
-    if isinstance(normalized.get("orders"), dict):
-        for order_id, value in normalized["orders"].items():
+    orders = normalized.get("orders")
+    if isinstance(orders, dict):
+        for order_id, value in orders.items():
+            key = str(order_id).strip()
             if value is None:
-                tools_module.ORDERS.pop(str(order_id), None)
+                tools_module.ORDERS.pop(key, None)
             elif isinstance(value, dict):
                 status = value.get("status")
-                if status:
-                    tools_module.ORDERS[str(order_id)] = {"status": str(status)}
+                if status is not None:
+                    tools_module.ORDERS[key] = {"status": str(status)}
             else:
-                tools_module.ORDERS[str(order_id)] = {"status": str(value)}
+                tools_module.ORDERS[key] = {"status": str(value)}
 
     hints: list[Any] = []
     for key in ("hints", "items", "preconditions"):
@@ -258,17 +262,37 @@ def _build_llm(config: dict | None, context: dict | None = None) -> Any:
         base_url = f"{base_url}/v1"
 
     model_cfg = _load_model_config(str(selected_model))
-    kwargs: dict[str, Any] = {
+    temperature = model_cfg.get("temperature", 0)
+    max_tokens = model_cfg.get("max_tokens")
+    timeout = model_cfg.get("timeout")
+
+    if ChatLiteLLM is not None:
+        kwargs: dict[str, Any] = {
+            "model": str(selected_model),
+            "api_base": base_url,
+            "api_key": api_key,
+            "temperature": temperature,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            return ChatLiteLLM(**kwargs)
+        except Exception:
+            pass
+
+    kwargs = {
         "model": str(selected_model),
         "base_url": base_url,
         "api_key": api_key,
+        "temperature": temperature,
         "disable_streaming": True,
     }
-    for src_key, dst_key in (("temperature", "temperature"), ("max_tokens", "max_tokens"), ("timeout", "timeout")):
-        if model_cfg.get(src_key) is not None:
-            kwargs[dst_key] = model_cfg[src_key]
-    if "temperature" not in kwargs:
-        kwargs["temperature"] = 0
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     return ChatOpenAI(**kwargs)
 
 
@@ -280,7 +304,8 @@ def _extract_answer(result: Any) -> str:
     if hasattr(result, "content"):
         content = getattr(result, "content", "")
         if isinstance(content, list):
-            return " ".join(_extract_answer(item) for item in content if item is not None).strip()
+            pieces = [_extract_answer(item) for item in content if item is not None]
+            return " ".join(piece for piece in pieces if piece).strip()
         return str(content).strip()
     if isinstance(result, dict):
         for key in ("output", "answer", "result"):
@@ -294,9 +319,20 @@ def _extract_answer(result: Any) -> str:
             return str(result).strip()
     if isinstance(result, list):
         parts = [_extract_answer(item) for item in result]
-        parts = [p for p in parts if p]
-        return "\n".join(parts).strip()
+        return "\n".join(part for part in parts if part).strip()
     return str(result).strip()
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_json_safe(v) for v in value]
+        return str(value)
 
 
 def _extract_gen_ai_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
@@ -320,33 +356,16 @@ def _extract_gen_ai_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     for key in keys:
         if key in attrs:
-            value = attrs.get(key)
-            try:
-                json.dumps(value)
-                compact[key] = value
-            except Exception:
-                compact[key] = str(value)
+            compact[key] = _json_safe(attrs.get(key))
     return compact
-
-
-def _json_safe(value: Any) -> Any:
-    try:
-        json.dumps(value)
-        return value
-    except Exception:
-        if isinstance(value, dict):
-            return {str(k): _json_safe(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [_json_safe(v) for v in value]
-        return str(value)
 
 
 def _span_to_node(span: Any) -> dict[str, Any]:
     attrs = {str(k): _json_safe(v) for k, v in dict(getattr(span, "attributes", {}) or {}).items()}
     gen_ai = _extract_gen_ai_attrs(attrs)
     operation = gen_ai.get("gen_ai.operation.name") or attrs.get("gen_ai.operation.name") or span.name
-    node_type = "span"
     lowered = str(operation).lower()
+    node_type = "span"
     if lowered == "chat":
         node_type = "llm"
     elif lowered == "execute_tool":
@@ -363,7 +382,6 @@ def _span_to_node(span: Any) -> dict[str, Any]:
         "gen_ai": gen_ai,
         "children": [],
     }
-
     if node_type == "tool":
         node["tool_name"] = (
             attrs.get("gen_ai.tool.name")
@@ -374,57 +392,55 @@ def _span_to_node(span: Any) -> dict[str, Any]:
     return node
 
 
-def _spans_to_tree(spans: list[Any], user_input: str, answer: str) -> dict[str, Any]:
-    nodes_by_id: dict[str, dict[str, Any]] = {}
-    root_children: list[dict[str, Any]] = []
+def _spans_to_tree(spans: list[Any], *, exclude_names: set[str]) -> list[dict[str, Any]]:
+    filtered = sorted(
+        [span for span in spans if getattr(span, "name", None) not in exclude_names],
+        key=lambda span: getattr(span, "start_time", 0) or 0,
+    )
+    nodes = {span.context.span_id: _span_to_node(span) for span in filtered}
+    child_ids: dict[int, list[int]] = {}
+    roots: list[int] = []
+    span_ids = set(nodes)
 
-    for span in spans:
-        node = _span_to_node(span)
-        nodes_by_id[node["span_id"]] = node
+    for span in filtered:
+        sid = span.context.span_id
+        parent = span.parent.span_id if getattr(span, "parent", None) is not None else None
+        if parent is not None and parent in span_ids:
+            child_ids.setdefault(parent, []).append(sid)
+        else:
+            roots.append(sid)
 
-    synthetic_root_id: str | None = None
-    for node in nodes_by_id.values():
-        if node.get("name") == "user_input":
-            synthetic_root_id = node["span_id"]
-            break
+    def attach(sid: int) -> dict[str, Any]:
+        node = nodes[sid]
+        node["children"] = [attach(cid) for cid in child_ids.get(sid, [])]
+        return node
 
-    for node in nodes_by_id.values():
-        parent_id = node.get("parent_span_id")
-        if parent_id and parent_id in nodes_by_id:
-            nodes_by_id[parent_id]["children"].append(node)
-        elif node["span_id"] != synthetic_root_id:
-            root_children.append(node)
+    return [attach(rid) for rid in roots]
 
-    def _sort_tree(node: dict[str, Any]) -> None:
-        node["children"].sort(key=lambda child: (child.get("name") or "", child.get("span_id") or ""))
-        for child in node["children"]:
-            _sort_tree(child)
 
-    for child in root_children:
-        _sort_tree(child)
-
+def _build_trace(user_input: str, answer: str, spans: list[Any]) -> dict[str, Any]:
     return {
         "type": "user_input",
         "input": user_input,
         "output": answer,
-        "children": root_children,
+        "children": _spans_to_tree(spans, exclude_names={"user_input"}),
     }
 
 
 def _normalize_invocation_input(user_input: Any) -> str:
     if isinstance(user_input, str):
-        return user_input
+        return user_input.strip()
     if isinstance(user_input, dict):
         if "input" in user_input:
             return _normalize_invocation_input(user_input["input"])
         if "messages" in user_input and isinstance(user_input["messages"], list):
-            contents: list[str] = []
+            parts: list[str] = []
             for msg in user_input["messages"]:
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    contents.append(str(msg.get("content", "")))
+                if isinstance(msg, dict) and str(msg.get("role", "")).lower() == "user":
+                    parts.append(str(msg.get("content", "")))
                 elif hasattr(msg, "content"):
-                    contents.append(str(getattr(msg, "content", "")))
-            return "\n".join(part for part in contents if part).strip()
+                    parts.append(str(getattr(msg, "content", "")))
+            return "\n".join(part for part in parts if part).strip()
     return str(user_input or "").strip()
 
 
@@ -439,7 +455,7 @@ def _invoke_agent(user_input: Any, llm: Any) -> tuple[str, dict[str, Any]]:
         answer = _extract_answer(result)
         root_span.set_attribute("output.value", answer)
     spans = list(_exporter.get_finished_spans())
-    trace_tree = _spans_to_tree(spans, normalized_input, answer)
+    trace_tree = _build_trace(normalized_input, answer, spans)
     return answer, trace_tree
 
 
@@ -448,6 +464,7 @@ def call_api(prompt: str, options: dict, context: dict) -> dict:
     context = context or {}
     config = options.get("config") or {}
     vars_ = _get_var_mapping(prompt, context)
+
     precondition = vars_.get("precondition")
     if precondition is None:
         precondition = vars_.get("preconditions")
