@@ -16,83 +16,89 @@ defaultTest:
       value: "{{ rubric }}"
 
 tests:
-  - description: "Happy Path - Delivered Order Refund Success"
+  - description: "Happy Path - Refund for Delivered Order"
     vars:
-      user_message: "Please process a refund for order ORD-12345. The order has been delivered."
+      user_message: "I want a refund for order ORD-12345. The product wasn't as described."
       rubric: |
-        - calls lookup_order with order ID ORD-12345 before any refund action - calls refund_order after lookup_order confirms delivered status - responds with the exact message 'Refund successful' - does not skip lookup_order before calling refund_order - does not guess order status without calling lookup_order
+        - calls lookup_order tool with order ID ORD-12345 before any other action - receives order status 'delivered' from lookup_order - calls refund_order tool after confirming delivered status - responds with exactly 'Refund successful' - does not call refund_order before lookup_order - does not guess or invent order status
       scenario_type: "happy_path"
       expected_tools: '["lookup_order", "refund_order"]'
       precondition:
         {
                 "hints": [
-                        "Order ORD-12345 exists in system with status 'delivered'",
-                        "lookup_order will return status 'delivered' for ORD-12345"
+                        "Order ORD-12345 exists in system with status 'delivered'"
                 ]
         }
 
-  - description: "Business Rule - Processing Order Refund Denial"
+  - description: "Refund Denied - Order Still Processing"
     vars:
-      user_message: "I need a refund for order ORD-67890. It's still being processed."
+      user_message: "Please process a refund for order ORD-67890."
       rubric: |
-        - calls lookup_order with order ID ORD-67890 - does NOT call refund_order when order status is 'processing' - responds with the exact message 'Refund not allowed because order is still processing' - explains that refund is not permitted for processing orders - follows business rule: processing orders cannot be refunded
-      scenario_type: "happy_path"
+        - calls lookup_order tool with order ID ORD-67890 - receives order status 'processing' from lookup_order - does NOT call refund_order tool - responds with exactly 'Refund not allowed because order is still processing' - explains the reason for denial based on order status - follows business rule: no refunds for orders still processing
+      scenario_type: "validation"
       expected_tools: '["lookup_order"]'
       precondition:
         {
                 "hints": [
-                        "Order ORD-67890 exists in system with status 'processing'",
-                        "lookup_order will return status 'processing' for ORD-67890"
+                        "Order ORD-67890 exists in system with status 'processing'"
                 ]
         }
 
-  - description: "Missing Info - Request Order ID When Not Provided"
+  - description: "Missing Information - No Order ID Provided"
     vars:
-      user_message: "I want to request a refund for my recent order."
+      user_message: "I need a refund for my order. It was the wrong color."
       rubric: |
-        - asks user to provide the order ID before proceeding - does not call lookup_order without an order ID - does not call refund_order without an order ID - does not guess or fabricate an order ID - clearly explains that order ID is required to process refund request
+        - recognizes that order ID is missing from request - asks customer to provide order ID before proceeding - does not call lookup_order without an order ID - does not call refund_order without an order ID - does not guess or invent an order ID - maintains helpful, customer-focused tone while requesting information
       scenario_type: "missing_info"
 
-  - description: "Edge Case - Invalid Order ID Format"
+  - description: "Order Not Found - Non-Existent Order ID"
     vars:
-      user_message: "Process refund for order AB"
+      user_message: "I'd like to request a refund for order ORD-99999."
       rubric: |
-        - calls lookup_order with the provided order ID - receives error response from lookup_order indicating invalid order ID - communicates to user that the order ID is invalid - does not call refund_order for invalid order ID - asks user to provide a valid order ID
+        - calls lookup_order tool with order ID ORD-99999 - receives 'order not found' error from lookup_order - informs customer that order ORD-99999 was not found in the system - does not call refund_order for non-existent order - asks customer to verify the order ID or provides next steps - does not invent order status or fake order information
       scenario_type: "edge_case"
       expected_tools: '["lookup_order"]'
       precondition:
         {
                 "hints": [
-                        "lookup_order will return error 'invalid order id' for order IDs shorter than 3 characters"
+                        "Order ORD-99999 does not exist in system"
                 ]
         }
 
-  - description: "Edge Case - Order Not Found"
+  - description: "Invalid Order ID - Malformed Order ID"
     vars:
-      user_message: "I need a refund for order NONEXISTENT-999"
+      user_message: "Process refund for order AB."
       rubric: |
-        - calls lookup_order with the provided order ID - receives error response from lookup_order indicating order not found - communicates to user that the order was not found - does not call refund_order for non-existent order - asks user to verify the order ID or provide a different one
+        - calls lookup_order tool with order ID 'AB' - receives 'invalid order id' error from lookup_order - informs customer that the order ID format is invalid - does not call refund_order for invalid order ID - asks customer to provide a valid order ID - maintains professional tone despite invalid input
       scenario_type: "edge_case"
       expected_tools: '["lookup_order"]'
-      precondition:
-        {
-                "hints": [
-                        "Order NONEXISTENT-999 does not exist in system",
-                        "lookup_order will return error 'order not found'"
-                ]
-        }
 
-  - description: "Tool Selection - Verify Correct Tool Sequencing"
+  - description: "Tool Selection - Multiple Orders Processed Sequentially"
     vars:
-      user_message: "Can I get a refund for order ORD-54321?"
+      user_message: "I want refunds for orders ORD-11111 and ORD-22222. Both were delivered but wrong items."
       rubric: |
-        - calls lookup_order first to check order status - waits for lookup_order response before deciding on refund_order - only calls refund_order if lookup_order returns 'delivered' status - never calls refund_order before lookup_order - never skips lookup_order step regardless of user claims about status
+        - identifies two distinct order IDs: ORD-11111 and ORD-22222 - calls lookup_order for first order before any refund_order - calls lookup_order for second order (order may vary) - calls refund_order for orders with 'delivered' status only - processes each order independently with proper tool sequencing - provides clear response about refund outcomes for both orders - does not skip lookup_order for any order
       scenario_type: "tool_selection"
       expected_tools: '["lookup_order", "refund_order"]'
       precondition:
         {
                 "hints": [
-                        "Order ORD-54321 exists in system with status 'delivered'",
-                        "lookup_order will return status 'delivered' for ORD-54321"
+                        "Order ORD-11111 exists with status 'delivered'",
+                        "Order ORD-22222 exists with status 'delivered'"
+                ]
+        }
+
+  - description: "Mixed Status Orders - Partial Refund Processing"
+    vars:
+      user_message: "Please process refunds for both orders ORD-33333 and ORD-44444."
+      rubric: |
+        - identifies both order IDs: ORD-33333 and ORD-44444 - calls lookup_order for each order - calls refund_order only for the delivered order - does NOT call refund_order for the processing order - provides successful refund message for delivered order - provides denial message for processing order with explanation - clearly communicates different outcomes for each order
+      scenario_type: "validation"
+      expected_tools: '["lookup_order", "refund_order"]'
+      precondition:
+        {
+                "hints": [
+                        "Order ORD-33333 exists with status 'delivered'",
+                        "Order ORD-44444 exists with status 'processing'"
                 ]
         }
