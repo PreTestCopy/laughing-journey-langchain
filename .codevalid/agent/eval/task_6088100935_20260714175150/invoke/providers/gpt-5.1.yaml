@@ -1,0 +1,5 @@
+id: file://provider_invoke.py
+label: "invoke / gpt-5.1"
+config:
+  model: gpt-5.1
+  temperature: 0

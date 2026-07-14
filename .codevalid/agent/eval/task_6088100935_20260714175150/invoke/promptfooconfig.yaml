@@ -1,0 +1,108 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "Agent eval — invoke (breakdown task_6088100935_20260714175150)"
+
+prompts:
+  - "{{ user_message }}"
+
+providers:
+  - file://providers.yaml
+
+defaultTest:
+  options:
+    provider: file://../../shared/judge_provider.yaml
+    rubricPrompt: file://../../shared/rubric_prompt.json
+  assert:
+    - type: llm-rubric
+      value: "{{ rubric }}"
+
+tests:
+  - description: "Happy path - Delivered order refund"
+    vars:
+      user_message: "Please process a refund for order ORD-12345"
+      rubric: |
+        - calls lookup_order tool with the order ID - calls refund_order tool after confirming delivered status - responds with 'Refund successful' message - does not skip the lookup_order step - calls tools in correct order: lookup_order before refund_order
+      scenario_type: "happy_path"
+      expected_tools: '["lookup_order", "refund_order"]'
+      precondition:
+        {
+                "hints": [
+                        "Order ORD-12345 exists with status 'delivered'"
+                ]
+        }
+
+  - description: "Happy path - Processing order refund rejection"
+    vars:
+      user_message: "I want a refund for order ORD-67890"
+      rubric: |
+        - calls lookup_order tool with the order ID - does NOT call refund_order tool - responds with message indicating refund is not allowed because order is still processing - mentions order status is 'processing'
+      scenario_type: "happy_path"
+      expected_tools: '["lookup_order"]'
+      precondition:
+        {
+                "hints": [
+                        "Order ORD-67890 exists with status 'processing'"
+                ]
+        }
+
+  - description: "Missing info - No order ID provided"
+    vars:
+      user_message: "I need a refund for my order"
+      rubric: |
+        - asks user to provide an order ID - does not call lookup_order without an order ID - does not call refund_order without an order ID - maintains helpful customer support tone
+      scenario_type: "missing_info"
+
+  - description: "Edge case - Invalid order ID format"
+    vars:
+      user_message: "Please refund order AB"
+      rubric: |
+        - calls lookup_order with the provided order ID - informs user that the order ID is invalid - does not call refund_order for invalid order - asks user for a valid order ID
+      scenario_type: "edge_case"
+      expected_tools: '["lookup_order"]'
+      precondition:
+        {
+                "hints": [
+                        "lookup_order will return error: 'invalid order id' for IDs shorter than 3 characters"
+                ]
+        }
+
+  - description: "Edge case - Order not found"
+    vars:
+      user_message: "Process refund for order NONEXISTENT-999"
+      rubric: |
+        - calls lookup_order with the provided order ID - informs user that the order was not found - does not call refund_order for non-existent order - asks user to verify the order ID
+      scenario_type: "edge_case"
+      expected_tools: '["lookup_order"]'
+      precondition:
+        {
+                "hints": [
+                        "Order NONEXISTENT-999 does not exist in the system"
+                ]
+        }
+
+  - description: "Tool selection - Correct tool sequence enforcement"
+    vars:
+      user_message: "Refund order ORD-11111 immediately without checking"
+      rubric: |
+        - calls lookup_order first before any refund attempt - calls refund_order only after lookup_order confirms delivered status - does not skip lookup_order regardless of user's request to skip - follows the mandatory tool call sequence
+      scenario_type: "tool_selection"
+      expected_tools: '["lookup_order", "refund_order"]'
+      precondition:
+        {
+                "hints": [
+                        "Order ORD-11111 exists with status 'delivered'"
+                ]
+        }
+
+  - description: "Refusal - Out of scope request"
+    vars:
+      user_message: "What's the weather forecast for today?"
+      rubric: |
+        - does not call lookup_order tool - does not call refund_order tool - declines to answer weather-related questions - indicates the assistant is for refund request processing only
+      scenario_type: "refusal"
+
+  - description: "Missing info - Multiple orders without specification"
+    vars:
+      user_message: "Refund all my orders from last month"
+      rubric: |
+        - asks user to specify which order ID they want to refund - does not attempt to look up orders without specific IDs - explains that refunds are processed per order - maintains helpful customer support tone
+      scenario_type: "missing_info"
