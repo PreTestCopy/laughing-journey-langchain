@@ -1,18 +1,23 @@
+import ast
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+
+WORKSPACE_ROOT = "/private/var/folders/64/v39k3dlx3kl6dhmf1gjqpmr4rlcd68/T/test_gen_gl7f8suk"
+if WORKSPACE_ROOT not in sys.path:
+    sys.path.insert(0, WORKSPACE_ROOT)
+
+os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY")
 
 import yaml
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY")
 
 try:
     from openinference.instrumentation.langchain import LangChainInstrumentor
@@ -22,15 +27,15 @@ except ImportError:
     except ImportError:
         from opentelemetry.instrumentation.langchain import LangChainInstrumentor
 
-WORKSPACE_ROOT = "/private/var/folders/64/v39k3dlx3kl6dhmf1gjqpmr4rlcd68/T/test_gen_gsiv3pmd"
-if WORKSPACE_ROOT not in sys.path:
-    sys.path.insert(0, WORKSPACE_ROOT)
-
 from langchain_openai import ChatOpenAI
 
 import agent as agent_module
 from agent import invoke as agent_invoke
 import tools as tools_module
+
+_PROVIDER_DIR = Path(".codevalid/agent/eval/task_8130871272_20260712041906/invoke")
+_PROMPTFOOCONFIG_PATH = Path(".codevalid/agent/eval/task_8130871272_20260712041906/invoke/promptfooconfig.yaml")
+_DEPENDENCIES_JSON_PATH = Path(".codevalid/agent/dependencies.json")
 
 _exporter = InMemorySpanExporter()
 _provider = TracerProvider()
@@ -44,183 +49,162 @@ try:
 except Exception:
     pass
 
-
-_DEFAULT_ORDERS = {
-    key: dict(value) if isinstance(value, dict) else value
-    for key, value in getattr(tools_module, "ORDERS", {}).items()
-}
+_BASE_ORDERS = json.loads(json.dumps(getattr(tools_module, "ORDERS", {})))
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    with path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    return data if isinstance(data, dict) else {}
+    data = yaml.safe_load(path.read_text())
+    return data or {}
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
 
 
 def _load_model_config(model_name: str | None) -> dict[str, Any]:
     if not model_name:
         return {}
-    provider_dir = Path(".codevalid/agent/eval/task_8130871272_20260712041906/invoke/providers")
-    candidate = provider_dir / f"{model_name}.yaml"
-    if candidate.exists():
-        data = _load_yaml(candidate)
-        config = data.get("config", data)
-        return config if isinstance(config, dict) else {}
+    model_path = _PROVIDER_DIR / "providers" / f"{model_name}.yaml"
+    if model_path.exists():
+        data = _load_yaml(model_path)
+        if isinstance(data, dict):
+            return data.get("config", data) or {}
+    providers_yaml = _PROVIDER_DIR / "providers.yaml"
+    if providers_yaml.exists():
+        data = yaml.safe_load(providers_yaml.read_text()) or []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                provider_id = str(item.get("id", ""))
+                if provider_id.endswith(f":{model_name}") or provider_id == model_name:
+                    return item.get("config", {}) or {}
     return {}
 
 
-def _get_var_mapping(prompt: Any, context: dict | None) -> dict[str, Any]:
-    mapping: dict[str, Any] = {}
-    if isinstance(context, dict):
-        vars_ = context.get("vars")
-        if isinstance(vars_, dict):
-            mapping.update(vars_)
-    if isinstance(prompt, dict):
-        mapping.update(prompt)
-    return mapping
+def _get_var_mapping(prompt: str, context: dict | None) -> dict[str, Any]:
+    context = context or {}
+    vars_ = context.get("vars") or {}
+    if isinstance(vars_, str):
+        try:
+            parsed = json.loads(vars_)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return vars_ if isinstance(vars_, dict) else {}
 
 
-def _extract_user_input(prompt: Any, context: dict | None) -> str:
+def _extract_user_input(prompt: str, context: dict | None) -> str:
     vars_ = _get_var_mapping(prompt, context)
     for key in ("user_input", "input", "message"):
         value = vars_.get(key)
         if value:
             return str(value)
-    if isinstance(prompt, str) and prompt.strip():
-        return prompt
-    if isinstance(prompt, dict):
-        if isinstance(prompt.get("input"), str):
-            return prompt["input"]
-        messages = prompt.get("messages")
-        if isinstance(messages, list):
-            for item in reversed(messages):
-                if isinstance(item, dict) and item.get("role") == "user":
-                    content = item.get("content")
-                    if isinstance(content, str):
-                        return content
-    return ""
+    return str(prompt or "").strip()
 
 
-def _extract_answer(result: Any) -> str:
-    if result is None:
-        return ""
-    if isinstance(result, str):
-        return result.strip()
-    content = getattr(result, "content", None)
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(result, dict):
-        for key in ("output", "answer", "result"):
-            value = result.get(key)
-            if value is not None:
-                return _extract_answer(value)
-        messages = result.get("messages")
-        if isinstance(messages, list) and messages:
-            return _extract_answer(messages[-1])
-        return json.dumps(result, ensure_ascii=False)
-    if isinstance(result, list):
-        if not result:
-            return ""
-        return _extract_answer(result[-1])
-    return str(result).strip()
-
-
-def _parse_precondition(precondition: Any) -> dict[str, Any]:
-    if precondition is None or precondition == "":
-        return {}
-    if isinstance(precondition, dict):
-        return precondition
-    if isinstance(precondition, list):
-        return {"hints": precondition}
-    if isinstance(precondition, str):
-        text = precondition.strip()
-        if not text:
-            return {}
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict):
-                return data
-            if isinstance(data, list):
-                return {"hints": data}
-        except Exception:
-            pass
-        return {"hints": [text]}
-    return {"value": precondition}
-
-
-def _seed_order(order_id: str, status: str) -> None:
-    normalized_id = str(order_id).strip()
-    if not normalized_id:
-        return
-    tools_module.ORDERS[normalized_id] = {"status": str(status).strip()}
-
-
-def _apply_hint_string(hint: str) -> None:
-    text = str(hint).strip()
+def _parse_order_hint(text: str) -> dict[str, Any] | None:
     if not text:
-        return
-    patterns = [
-        re.compile(r"Order\s+(.+?)\s+exists\s+in\s+system\s+with\s+status\s+'([^']+)'", re.IGNORECASE),
-        re.compile(r"Order\s+(.+?)\s+exists\s+in\s+system\s+with\s+status\s+\"([^\"]+)\"", re.IGNORECASE),
-        re.compile(r"order\s+(.+?)\s+status\s+(delivered|processing|cancelled|refunded)", re.IGNORECASE),
-    ]
-    for pattern in patterns:
-        match = pattern.search(text)
-        if match:
-            _seed_order(match.group(1), match.group(2).lower())
-            return
+        return None
+    lowered = text.lower()
+    order_match = re.search(r"\b(ORD-[A-Za-z0-9-]+|[A-Za-z0-9-]{3,})\b", text)
+    if not order_match:
+        return None
+    order_id = order_match.group(1).strip()
+    if "does not exist" in lowered or "not exist" in lowered or "not found" in lowered:
+        return {"order_id": order_id, "exists": False}
+    status_match = re.search(r"status\s+["'“”]?([A-Za-z_ -]+)["'“”]?", text, re.IGNORECASE)
+    status = None
+    if status_match:
+        status = status_match.group(1).strip().strip(".').\"")
+    else:
+        for candidate in ("delivered", "processing", "shipped", "cancelled"):
+            if candidate in lowered:
+                status = candidate
+                break
+    if status:
+        return {"order_id": order_id, "exists": True, "status": status}
+    return None
+
+
+def _normalize_precondition(precondition: Any) -> list[Any]:
+    if precondition in (None, "", []):
+        return []
+    if isinstance(precondition, str):
+        stripped = precondition.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return parsed
+            return [parsed]
+        except Exception:
+            return [stripped]
+    if isinstance(precondition, list):
+        return precondition
+    if isinstance(precondition, dict):
+        return [precondition]
+    return [precondition]
 
 
 def setup_dependencies(precondition: Any, config: dict | None) -> None:
     del config
-    tools_module.ORDERS.clear()
-    tools_module.ORDERS.update(
-        {
-            key: dict(value) if isinstance(value, dict) else value
-            for key, value in _DEFAULT_ORDERS.items()
-        }
-    )
+    if hasattr(tools_module, "ORDERS") and isinstance(tools_module.ORDERS, dict):
+        tools_module.ORDERS.clear()
+        tools_module.ORDERS.update(json.loads(json.dumps(_BASE_ORDERS)))
 
-    parsed = _parse_precondition(precondition)
-
-    orders = parsed.get("orders")
-    if isinstance(orders, dict):
-        for order_id, value in orders.items():
-            if isinstance(value, dict):
-                status = value.get("status")
-            else:
-                status = value
-            if status:
-                _seed_order(order_id, status)
-
-    for key in ("order", "seed_order"):
-        item = parsed.get(key)
+    items = _normalize_precondition(precondition)
+    for item in items:
         if isinstance(item, dict):
-            order_id = item.get("order_id") or item.get("id")
-            status = item.get("status")
-            if order_id and status:
-                _seed_order(order_id, status)
+            orders = item.get("orders")
+            if isinstance(orders, dict):
+                for order_id, order_data in orders.items():
+                    if isinstance(order_data, dict):
+                        tools_module.ORDERS[str(order_id).strip()] = {
+                            "status": str(order_data.get("status", "")).strip()
+                        }
+            for key in ("hints", "hint"):
+                hints = item.get(key)
+                if isinstance(hints, list):
+                    for hint in hints:
+                        parsed = _parse_order_hint(str(hint))
+                        if parsed:
+                            _apply_order_seed(parsed)
+                elif hints:
+                    parsed = _parse_order_hint(str(hints))
+                    if parsed:
+                        _apply_order_seed(parsed)
+            if "order_id" in item:
+                _apply_order_seed(item)
+        else:
+            parsed = _parse_order_hint(str(item))
+            if parsed:
+                _apply_order_seed(parsed)
 
-    hints = parsed.get("hints")
-    if isinstance(hints, str):
-        hints = [hints]
-    if isinstance(hints, list):
-        for hint in hints:
-            _apply_hint_string(str(hint))
 
-    raw_hint = parsed.get("hint")
-    if isinstance(raw_hint, str):
-        _apply_hint_string(raw_hint)
+def _apply_order_seed(item: dict[str, Any]) -> None:
+    order_id = str(item.get("order_id", "")).strip()
+    if not order_id:
+        return
+    exists = item.get("exists", True)
+    if exists is False:
+        tools_module.ORDERS.pop(order_id, None)
+        return
+    status = str(item.get("status", "")).strip() or "processing"
+    tools_module.ORDERS[order_id] = {"status": status}
 
 
-def _build_llm(config: dict | None, context: dict | None = None) -> ChatOpenAI:
+def _build_llm(config: dict | None, context: dict | None = None):
     config = config or {}
-    vars_ = _get_var_mapping({}, context)
+    vars_ = _get_var_mapping("", context)
     model_name = config.get("model") or vars_.get("model") or os.environ.get("MODEL_NAME")
     if not model_name:
-        raise RuntimeError("No model selected for provider invocation")
+        raise RuntimeError("No model selected for eval")
 
     base_url = os.environ.get("LITELLM_BASE_URL")
     api_key = os.environ.get("LITELLM_API_KEY")
@@ -230,22 +214,83 @@ def _build_llm(config: dict | None, context: dict | None = None) -> ChatOpenAI:
     if not base_url.endswith("/v1"):
         base_url = f"{base_url}/v1"
 
-    model_cfg = _load_model_config(str(model_name))
+    model_cfg = _load_model_config(model_name)
     kwargs: dict[str, Any] = {
-        "model": str(model_name),
+        "model": model_name,
         "base_url": base_url,
         "api_key": api_key,
+        "temperature": model_cfg.get("temperature", 0),
         "disable_streaming": True,
     }
-    if "temperature" in model_cfg:
-        kwargs["temperature"] = model_cfg["temperature"]
-    else:
-        kwargs["temperature"] = 0
-    if "max_tokens" in model_cfg:
-        kwargs["max_tokens"] = model_cfg["max_tokens"]
-    if "timeout" in model_cfg:
-        kwargs["timeout"] = model_cfg["timeout"]
+    for key in ("max_tokens", "timeout"):
+        if model_cfg.get(key) is not None:
+            kwargs[key] = model_cfg[key]
     return ChatOpenAI(**kwargs)
+
+
+@contextmanager
+def _patch_get_llm(llm):
+    original = agent_module.get_llm
+
+    def _replacement_get_llm(*, traceparent: str | None = None):
+        if traceparent:
+            try:
+                headers = getattr(llm, "default_headers", None) or {}
+                headers = dict(headers)
+                headers["traceparent"] = traceparent
+                if hasattr(llm, "model_copy"):
+                    return llm.model_copy(update={"default_headers": headers})
+            except Exception:
+                pass
+        return llm
+
+    agent_module.get_llm = _replacement_get_llm
+    try:
+        yield
+    finally:
+        agent_module.get_llm = original
+
+
+def _message_content(message: Any) -> str:
+    if message is None:
+        return ""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("content") or ""
+                if text:
+                    parts.append(str(text))
+        return "\n".join(p for p in parts if p)
+    return str(content) if content is not None else str(message)
+
+
+def _extract_answer(result: Any) -> str:
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result.strip()
+    content = getattr(result, "content", None)
+    if content is not None:
+        return _message_content(result).strip()
+    if isinstance(result, dict):
+        for key in ("output", "answer", "result"):
+            if key in result and result[key] is not None:
+                return _extract_answer(result[key])
+        messages = result.get("messages")
+        if messages:
+            return _extract_answer(messages[-1])
+        return json.dumps(result, ensure_ascii=False)
+    if isinstance(result, list):
+        if not result:
+            return ""
+        return _extract_answer(result[-1])
+    return str(result).strip()
 
 
 def _extract_gen_ai_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
@@ -271,7 +316,7 @@ def _extract_gen_ai_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     extracted: dict[str, Any] = {}
     for key in keys:
         if key in attrs:
-            value = attrs[key]
+            value = attrs.get(key)
             try:
                 json.dumps(value)
                 extracted[key] = value
@@ -280,70 +325,104 @@ def _extract_gen_ai_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     return extracted
 
 
-def _normalize_attr_value(value: Any) -> Any:
-    try:
-        json.dumps(value)
-        return value
-    except TypeError:
-        if isinstance(value, (list, tuple)):
-            return [_normalize_attr_value(v) for v in value]
-        if isinstance(value, dict):
-            return {str(k): _normalize_attr_value(v) for k, v in value.items()}
-        return str(value)
+def _safe_attr_dict(span: Any) -> dict[str, Any]:
+    attrs = dict(getattr(span, "attributes", {}) or {})
+    safe: dict[str, Any] = {}
+    for key, value in attrs.items():
+        try:
+            json.dumps(value)
+            safe[str(key)] = value
+        except TypeError:
+            safe[str(key)] = str(value)
+    return safe
 
 
 def _span_kind(span: Any, attrs: dict[str, Any]) -> str:
-    operation = str(attrs.get("gen_ai.operation.name", "")).lower()
-    name = str(span.name).lower()
-    if operation == "execute_tool" or "tool" in name:
+    name = getattr(span, "name", "") or ""
+    op = str(attrs.get("gen_ai.operation.name", "") or "").lower()
+    if op == "execute_tool" or "tool" in name.lower():
         return "tool"
-    if operation == "chat" or "llm" in name or "chatopenai" in name:
+    if op == "chat" or "llm" in name.lower() or "chatopenai" in name.lower():
         return "llm"
-    if operation in {"invoke_agent", "invoke_workflow"} or "agent" in name or "chain" in name:
+    if op in {"invoke_agent", "invoke_workflow"} or "agent" in name.lower():
         return "agent"
     return "span"
 
 
+def _coerce_possible_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    if text[0] not in "[{\"":
+        return value
+    try:
+        return json.loads(text)
+    except Exception:
+        return value
+
+
 def _span_to_node(span: Any) -> dict[str, Any]:
-    attrs = {str(k): _normalize_attr_value(v) for k, v in dict(span.attributes or {}).items()}
-    node = {
-        "name": span.name,
+    attrs = _safe_attr_dict(span)
+    gen_ai = _extract_gen_ai_attrs(attrs)
+    name = getattr(span, "name", "") or ""
+    node: dict[str, Any] = {
+        "name": name,
         "type": _span_kind(span, attrs),
         "span_id": format(span.context.span_id, "x"),
         "parent_span_id": format(span.parent.span_id, "x") if span.parent is not None else None,
         "attributes": attrs,
-        "gen_ai": _extract_gen_ai_attrs(attrs),
+        "gen_ai": gen_ai,
         "children": [],
     }
+
     tool_name = attrs.get("gen_ai.tool.name") or attrs.get("tool.name")
     if tool_name:
-        node["tool_name"] = tool_name
-    if "input.value" in attrs:
-        node["input"] = attrs["input.value"]
-    elif "gen_ai.prompt" in attrs:
-        node["input"] = attrs["gen_ai.prompt"]
-    elif "gen_ai.input.messages" in attrs:
-        node["input"] = attrs["gen_ai.input.messages"]
-    elif "llm.input_messages" in attrs:
-        node["input"] = attrs["llm.input_messages"]
-    if "output.value" in attrs:
-        node["output"] = attrs["output.value"]
-    elif "gen_ai.completion" in attrs:
-        node["output"] = attrs["gen_ai.completion"]
-    elif "gen_ai.output.messages" in attrs:
-        node["output"] = attrs["gen_ai.output.messages"]
-    elif "llm.output_messages" in attrs:
-        node["output"] = attrs["llm.output_messages"]
+        node["name"] = str(tool_name)
+    if node["type"] == "tool":
+        node["input"] = _coerce_possible_json(
+            attrs.get("gen_ai.tool.call.arguments")
+            or attrs.get("input.value")
+            or attrs.get("tool.arguments")
+            or ""
+        )
+        node["output"] = _coerce_possible_json(
+            attrs.get("gen_ai.tool.call.result")
+            or attrs.get("output.value")
+            or attrs.get("tool.result")
+            or ""
+        )
+    elif node["type"] == "llm":
+        node["input"] = (
+            attrs.get("gen_ai.input.messages")
+            or attrs.get("llm.input_messages")
+            or attrs.get("input.value")
+            or attrs.get("gen_ai.prompt")
+            or ""
+        )
+        node["output"] = (
+            attrs.get("gen_ai.output.messages")
+            or attrs.get("llm.output_messages")
+            or attrs.get("output.value")
+            or attrs.get("gen_ai.completion")
+            or ""
+        )
+    else:
+        if "input.value" in attrs:
+            node["input"] = attrs.get("input.value")
+        if "output.value" in attrs:
+            node["output"] = attrs.get("output.value")
     return node
 
 
-def _spans_to_tree(spans: list[Any], exclude_names: set[str] | None = None) -> list[dict[str, Any]]:
+def _spans_to_tree(spans: list[Any], *, exclude_names: set[str] | None = None) -> list[dict[str, Any]]:
     exclude_names = exclude_names or set()
     filtered = sorted(
-        [span for span in spans if span.name not in exclude_names],
+        [s for s in spans if getattr(s, "name", "") not in exclude_names],
         key=lambda s: getattr(s, "start_time", 0) or 0,
     )
-    nodes = {span.context.span_id: _span_to_node(span) for span in filtered}
+    nodes = {s.context.span_id: _span_to_node(s) for s in filtered}
     child_ids: dict[int, list[int]] = {}
     roots: list[int] = []
     span_ids = set(nodes.keys())
@@ -361,7 +440,7 @@ def _spans_to_tree(spans: list[Any], exclude_names: set[str] | None = None) -> l
         node["children"] = [attach(cid) for cid in child_ids.get(sid, [])]
         return node
 
-    return [attach(rid) for rid in roots]
+    return [attach(root_id) for root_id in roots]
 
 
 def _build_trace(user_input: str, answer: str, spans: list[Any]) -> dict[str, Any]:
@@ -373,70 +452,48 @@ def _build_trace(user_input: str, answer: str, spans: list[Any]) -> dict[str, An
     }
 
 
-def _normalize_prompt_input(user_input: Any) -> str:
-    if isinstance(user_input, str):
-        return user_input
-    if isinstance(user_input, dict):
-        if isinstance(user_input.get("input"), str):
-            return user_input["input"]
-        messages = user_input.get("messages")
-        if isinstance(messages, list):
-            for item in reversed(messages):
-                if isinstance(item, dict) and item.get("role") == "user":
-                    content = item.get("content")
-                    if isinstance(content, str):
-                        return content
-    return _extract_answer(user_input)
-
-
-def _invoke_agent(user_input: Any, config: dict | None = None, context: dict | None = None) -> tuple[str, dict[str, Any]]:
-    normalized_input = _normalize_prompt_input(user_input)
-    llm = _build_llm(config, context)
-    tracer = trace.get_tracer("codevalid.promptfoo.provider.invoke")
-
-    def _patched_get_llm(*, traceparent: str | None = None):
-        if traceparent:
-            headers = {"traceparent": traceparent}
-            extra = getattr(llm, "model_kwargs", {}) or {}
-            merged = dict(extra)
-            merged["default_headers"] = headers
-            return ChatOpenAI(
-                model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
-                base_url=getattr(llm, "openai_api_base", None) or getattr(llm, "base_url", None),
-                api_key=getattr(llm, "openai_api_key", None) or os.environ.get("LITELLM_API_KEY"),
-                temperature=getattr(llm, "temperature", 0),
-                max_tokens=getattr(llm, "max_tokens", None),
-                timeout=getattr(llm, "request_timeout", None),
-                disable_streaming=True,
-                default_headers=headers,
-            )
-        return llm
+def _invoke_agent(llm, agent_input: Any, config: dict | None = None) -> tuple[str, dict[str, Any]]:
+    config = config or {}
+    normalized_input = ""
+    if isinstance(agent_input, str):
+        normalized_input = agent_input
+    elif isinstance(agent_input, dict):
+        if "input" in agent_input:
+            normalized_input = str(agent_input.get("input", ""))
+        elif "messages" in agent_input and agent_input["messages"]:
+            last = agent_input["messages"][-1]
+            if isinstance(last, dict):
+                normalized_input = str(last.get("content", ""))
+            else:
+                normalized_input = _message_content(last)
+    if not normalized_input:
+        raise RuntimeError("Unable to normalize user input for agent invocation")
 
     _exporter.clear()
-    with tracer.start_as_current_span("user_input") as root_span:
-        root_span.set_attribute("input.value", normalized_input)
-        with patch.object(agent_module, "get_llm", _patched_get_llm):
+    tracer = trace.get_tracer("codevalid.promptfoo.eval")
+    with _patch_get_llm(llm):
+        with tracer.start_as_current_span("user_input") as root_span:
+            root_span.set_attribute("input.value", normalized_input)
             result = agent_invoke(normalized_input)
-        answer = _extract_answer(result)
-        root_span.set_attribute("output.value", answer)
-
+            answer = _extract_answer(result)
+            root_span.set_attribute("output.value", answer)
     spans = list(_exporter.get_finished_spans())
     trace_tree = _build_trace(normalized_input, answer, spans)
     return answer, trace_tree
 
 
-def call_api(prompt: Any, options: dict | None, context: dict | None) -> dict:
+def call_api(prompt: str, options: dict, context: dict) -> dict:
     options = options or {}
     context = context or {}
-    config = options.get("config", {}) or {}
+    config = options.get("config") or {}
     vars_ = _get_var_mapping(prompt, context)
     precondition = vars_.get("precondition")
-    user_input = _extract_user_input(prompt, context)
-    if not user_input:
-        raise RuntimeError("Unable to resolve user input for agent invocation")
-
+    if precondition is None:
+        precondition = vars_.get("preconditions")
     setup_dependencies(precondition, config)
-    answer, trace_tree = _invoke_agent(user_input, config=config, context=context)
+    user_input = _extract_user_input(prompt, context)
+    llm = _build_llm(config, context)
+    answer, trace_tree = _invoke_agent(llm, {"input": user_input}, config=config)
     return {
         "output": json.dumps({"answer": answer, "trace": trace_tree}, ensure_ascii=False)
     }
