@@ -11,15 +11,15 @@ mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Given
-echo "STEP: Given — verify the public API entry point available for external testing"
-echo "PREREQ: lookup-order-first sequencing is an internal agent behavior, but only GET /health is exposed as a public API"
-printf '%s\n' 'GET /health' > "$REQUEST_BODY_FILE"
+echo "STEP: Given — establish the observable public HTTP surface"
+echo "PREREQ: internal tool sequencing cannot be observed from public HTTP because the service exposes only GET /health"
+printf '%s\n' 'Acceptance criterion requires lookup_order to run before resolution, but no public refund-resolution endpoint or trace endpoint is exposed' > "$REQUEST_BODY_FILE"
 echo "REQUEST_HEADERS: Accept: application/json"
 echo "REQUEST_BODY:"
 cat "$REQUEST_BODY_FILE"
 
 # When
-echo "STEP: When — send GET /health to the public service"
+echo "STEP: When — call GET /health on the app"
 HTTP_CODE="$(curl -sS -D "$RESPONSE_HEADERS" -o "$RESPONSE_BODY" -w '%{http_code}' \
   -X GET "$BASE_URL/health" \
   -H 'Accept: application/json')"
@@ -30,8 +30,8 @@ echo "RESPONSE_BODY:"
 cat "$RESPONSE_BODY"
 
 # Then
-echo "STEP: Then — assert public API health and document that tool-call ordering cannot be proven via HTTP because no refund endpoint exists"
+echo "STEP: Then — assert service health and record lack of public observability for lookup-first behavior"
 [ "$HTTP_CODE" = "200" ] || { echo "ASSERTION_FAILED: expected HTTP 200 got ${HTTP_CODE}"; exit 1; }
 grep -F '"status":"ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected response body to contain status ok"; exit 1; }
-echo "ASSERTION_OK: public API is reachable; however, internal lookup_order-before-refund_order sequencing is not externally observable through the current HTTP surface"
+echo "ASSERTION_OK: app is healthy, but no public HTTP endpoint or trace surface exists to prove lookup_order is always called first"
 echo "CODEVALID_TEST_ASSERTION_OK:agent_always_calls_lookup_first"

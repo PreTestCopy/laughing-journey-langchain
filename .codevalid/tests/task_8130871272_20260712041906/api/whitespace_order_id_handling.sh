@@ -11,15 +11,15 @@ mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Given
-echo "STEP: Given — inspect the reachable public API for whitespace-handling coverage"
-echo "PREREQ: whitespace normalization exists in internal lookup_order logic, but no refund request HTTP endpoint is exposed"
-printf '%s\n' 'GET /health' > "$REQUEST_BODY_FILE"
+echo "STEP: Given — establish the observable public HTTP surface"
+echo "PREREQ: there is no public refund-processing HTTP endpoint to submit an order id with surrounding whitespace; only GET /health is exposed"
+printf '%s\n' 'Business expectation: whitespace around order ids should be normalized before lookup, but this cannot be exercised through the current public API surface' > "$REQUEST_BODY_FILE"
 echo "REQUEST_HEADERS: Accept: application/json"
 echo "REQUEST_BODY:"
 cat "$REQUEST_BODY_FILE"
 
 # When
-echo "STEP: When — call GET /health"
+echo "STEP: When — call GET /health on the app"
 HTTP_CODE="$(curl -sS -D "$RESPONSE_HEADERS" -o "$RESPONSE_BODY" -w '%{http_code}' \
   -X GET "$BASE_URL/health" \
   -H 'Accept: application/json')"
@@ -30,8 +30,8 @@ echo "RESPONSE_BODY:"
 cat "$RESPONSE_BODY"
 
 # Then
-echo "STEP: Then — assert health and note that whitespace-trim refund behavior is not externally testable over HTTP"
+echo "STEP: Then — assert service health and record that whitespace-handling behavior is not publicly testable"
 [ "$HTTP_CODE" = "200" ] || { echo "ASSERTION_FAILED: expected HTTP 200 got ${HTTP_CODE}"; exit 1; }
 grep -F '"status":"ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected response body to contain status ok"; exit 1; }
-echo "ASSERTION_OK: public HTTP API is available, but there is no refund endpoint to submit whitespace-padded order IDs for end-to-end validation"
+echo "ASSERTION_OK: app is healthy, but no public HTTP refund endpoint exists to validate whitespace normalization for order ids"
 echo "CODEVALID_TEST_ASSERTION_OK:whitespace_order_id_handling"

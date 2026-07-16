@@ -11,15 +11,15 @@ mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Given
-echo "STEP: Given — establish what can be validated through the public HTTP API"
-echo "PREREQ: non-fabricated order status is an internal refund-agent guarantee, but no public refund endpoint is available"
-printf '%s\n' 'GET /health' > "$REQUEST_BODY_FILE"
+echo "STEP: Given — establish the observable public HTTP surface"
+echo "PREREQ: no public refund endpoint is available to submit an order with an unexpected status such as shipped; only GET /health is exposed"
+printf '%s\n' 'Acceptance criterion forbids fabricated order status, but the public API surface does not expose refund resolution responses for validation' > "$REQUEST_BODY_FILE"
 echo "REQUEST_HEADERS: Accept: application/json"
 echo "REQUEST_BODY:"
 cat "$REQUEST_BODY_FILE"
 
 # When
-echo "STEP: When — request GET /health"
+echo "STEP: When — call GET /health on the app"
 HTTP_CODE="$(curl -sS -D "$RESPONSE_HEADERS" -o "$RESPONSE_BODY" -w '%{http_code}' \
   -X GET "$BASE_URL/health" \
   -H 'Accept: application/json')"
@@ -30,8 +30,8 @@ echo "RESPONSE_BODY:"
 cat "$RESPONSE_BODY"
 
 # Then
-echo "STEP: Then — assert health and record that actual order-status handling cannot be exercised via public HTTP API"
+echo "STEP: Then — assert service health and record that fabricated-status prevention is not publicly testable"
 [ "$HTTP_CODE" = "200" ] || { echo "ASSERTION_FAILED: expected HTTP 200 got ${HTTP_CODE}"; exit 1; }
 grep -F '"status":"ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected response body to contain status ok"; exit 1; }
-echo "ASSERTION_OK: service is healthy; however, there is no external refund endpoint to verify shipped-order handling or prove the agent does not fabricate order status over HTTP"
+echo "ASSERTION_OK: app is healthy, but no public HTTP endpoint exists to verify responses for non-delivered unexpected order statuses"
 echo "CODEVALID_TEST_ASSERTION_OK:never_fabricates_order_status"

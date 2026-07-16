@@ -11,15 +11,15 @@ mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Given
-echo "STEP: Given — capture the actual public HTTP API surface"
-echo "PREREQ: invalid-order-id handling exists in internal tools logic, but no public refund-processing HTTP route is available"
-printf '%s\n' 'GET /health' > "$REQUEST_BODY_FILE"
+echo "STEP: Given — establish the observable public HTTP surface"
+echo "PREREQ: there is no public refund request HTTP endpoint that accepts an order id for validation; only GET /health is exposed"
+printf '%s\n' 'Business expectation: invalid short order ids should be rejected gracefully without fabricated status, but this is not reachable through the public API surface' > "$REQUEST_BODY_FILE"
 echo "REQUEST_HEADERS: Accept: application/json"
 echo "REQUEST_BODY:"
 cat "$REQUEST_BODY_FILE"
 
 # When
-echo "STEP: When — call GET /health"
+echo "STEP: When — call GET /health on the app"
 HTTP_CODE="$(curl -sS -D "$RESPONSE_HEADERS" -o "$RESPONSE_BODY" -w '%{http_code}' \
   -X GET "$BASE_URL/health" \
   -H 'Accept: application/json')"
@@ -30,8 +30,8 @@ echo "RESPONSE_BODY:"
 cat "$RESPONSE_BODY"
 
 # Then
-echo "STEP: Then — assert health and record that invalid-order-id refund behavior is not exposed over HTTP"
+echo "STEP: Then — assert service health and record that invalid-order-id handling is not publicly testable"
 [ "$HTTP_CODE" = "200" ] || { echo "ASSERTION_FAILED: expected HTTP 200 got ${HTTP_CODE}"; exit 1; }
 grep -F '"status":"ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected response body to contain status ok"; exit 1; }
-echo "ASSERTION_OK: HTTP service is healthy, but there is no public endpoint for submitting refund requests with invalid order IDs"
+echo "ASSERTION_OK: app is healthy, but no public HTTP refund endpoint exists to validate invalid-order-id handling"
 echo "CODEVALID_TEST_ASSERTION_OK:invalid_order_id_format"

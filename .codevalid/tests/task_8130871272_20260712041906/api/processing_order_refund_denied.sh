@@ -11,9 +11,9 @@ mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Given
-echo "STEP: Given — identify the reachable public HTTP endpoint"
-echo "PREREQ: acceptance criteria describe processing-order denial behavior, but the service does not expose a refund resolution HTTP route"
-printf '%s\n' 'GET /health' > "$REQUEST_BODY_FILE"
+echo "STEP: Given — establish the observable public HTTP surface"
+echo "PREREQ: no public refund-processing endpoint is exposed; only GET /health is available"
+printf '%s\n' 'Expected business rule: processing orders must not be refunded, but this cannot be asserted through public HTTP without a refund endpoint' > "$REQUEST_BODY_FILE"
 echo "REQUEST_HEADERS: Accept: application/json"
 echo "REQUEST_BODY:"
 cat "$REQUEST_BODY_FILE"
@@ -30,8 +30,8 @@ echo "RESPONSE_BODY:"
 cat "$RESPONSE_BODY"
 
 # Then
-echo "STEP: Then — assert health response and record that processing-order refund denial is not testable via public HTTP API"
+echo "STEP: Then — assert service health and record that processing-order denial is not publicly testable"
 [ "$HTTP_CODE" = "200" ] || { echo "ASSERTION_FAILED: expected HTTP 200 got ${HTTP_CODE}"; exit 1; }
 grep -F '"status":"ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected response body to contain status ok"; exit 1; }
-echo "ASSERTION_OK: service is reachable, but no public refund endpoint exists to verify lookup-before-denial behavior for processing orders"
+echo "ASSERTION_OK: app is healthy, but no public HTTP refund endpoint exists to verify processing-order denial or absence of refund execution"
 echo "CODEVALID_TEST_ASSERTION_OK:processing_order_refund_denied"
