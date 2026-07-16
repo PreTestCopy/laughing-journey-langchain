@@ -14,7 +14,7 @@ cleanup_tmp() {
 trap cleanup_tmp EXIT
 
 # Given
-echo "STEP: Given — prepare stateless health endpoint verification"
+echo "STEP: Given — prepare stateless health endpoint header verification"
 echo "PREREQ: using BASE_URL=${BASE_URL} for GET /health"
 
 # When
@@ -31,11 +31,11 @@ echo "RESPONSE_BODY:"
 cat "$RESPONSE_BODY"
 
 # Then
-echo "STEP: Then — assert HTTP 200 and exact ok status payload"
+echo "STEP: Then — assert HTTP 200 and JSON content type header"
 [ "$HTTP_CODE" = "200" ] || { echo "ASSERTION_FAILED: expected HTTP 200 got ${HTTP_CODE}"; exit 1; }
-grep -F '"status":"ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || grep -F '"status": "ok"' "$RESPONSE_BODY" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected response body to contain JSON status ok"; exit 1; }
+grep -Ei '^content-type:[[:space:]]*application/json' "$RESPONSE_HEADERS" >/dev/null 2>&1 || { echo "ASSERTION_FAILED: expected Content-Type header to include application/json"; exit 1; }
 
 # Cleanup
 echo "STEP: Cleanup — no stateful cleanup required for stateless health check"
 
-echo "CODEVALID_TEST_ASSERTION_OK:health_endpoint_returns_ok"
+echo "CODEVALID_TEST_ASSERTION_OK:health_endpoint_content_type"
