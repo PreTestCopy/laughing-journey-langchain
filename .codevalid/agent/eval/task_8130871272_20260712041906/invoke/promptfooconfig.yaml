@@ -9,8 +9,8 @@ providers:
 
 defaultTest:
   options:
-    provider: file://../../shared/judge_provider.yaml
-    rubricPrompt: file://../../shared/rubric_prompt.json
+    provider: file://../../../shared/judge_provider.yaml
+    rubricPrompt: file://../../../shared/rubric_prompt.json
   assert:
     - type: llm-rubric
       value: "{{ rubric }}"
